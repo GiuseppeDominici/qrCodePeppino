@@ -19,15 +19,12 @@ public class RequestData {
     private String backgroundColor;
     private String borderColor;
     private String textBorder;
-    private String topOrBottom;
+    private String textColor;
     private String logoCenterUrl;
-    private String logoBorderUrl;
+    private String template;
+
     private int qrWidth;
     private int qrHeight;
-    private int topBorderSize;
-    private int bottomBorderSize;
-    private int leftBorderSize;
-    private int rightBorderSize;
 
     public Color getBorderColorAsColor() {
         return MethodUtils.convertHexToColor(borderColor, "borderColor");
@@ -39,6 +36,10 @@ public class RequestData {
 
     public Color getQrCodeColorAsColor() {
         return MethodUtils.convertHexToColor(qrCodeColor, "qrCodeColor");
+    }
+
+    public Color getTextColorAsColor() {
+        return MethodUtils.convertHexToColor(textColor, "textColor");
     }
 
 }

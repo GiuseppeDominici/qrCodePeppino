@@ -1,14 +1,15 @@
 package com.library.qrcodepeppino.Utils;
 
+import com.library.qrcodepeppino.Model.RequestData;
+import com.library.qrcodepeppino.Model.ResponseImage;
+import com.library.qrcodepeppino.Model.SeparateFields;
+import com.library.qrcodepeppino.Model.TemplateModel;
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.WriterException;
 import com.google.zxing.client.j2se.MatrixToImageConfig;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
-import com.library.qrcodepeppino.Model.RequestData;
-import com.library.qrcodepeppino.Model.ResponseImage;
-import com.library.qrcodepeppino.Model.SeparateFields;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.StringUtils;
@@ -25,6 +26,8 @@ import java.net.URL;
 import java.util.List;
 import java.util.*;
 
+import static com.library.qrcodepeppino.Utils.TemplateConfig.getTemplateByName;
+
 public class MethodUtils {
 
     public static byte[] generateQrCodeImage(RequestData requestData) throws IOException, RuntimeException, WriterException {
@@ -40,15 +43,18 @@ public class MethodUtils {
     }
 
     private static void validateRequestData(RequestData requestData) {
-        if (requestData.getQrWidth() == 0 && requestData.getQrHeight() == 0) {
-            requestData.setQrWidth(200);
-            requestData.setQrHeight(200);
-        } else if (requestData.getQrWidth() < 200 || requestData.getQrHeight() < 200) {
-            throw new RuntimeException("Se vuoi personalizzare le dimensioni, devono essere minimo 200");
-        }
-
         if (!StringUtils.hasLength(requestData.getRequestUrl())) {
             throw new RuntimeException("Specificare un URL");
+        }
+
+        if (requestData.getTemplate() == null || requestData.getTemplate().isEmpty()) {
+            requestData.setQrWidth(200);
+            requestData.setQrHeight(200);
+        } else {
+            TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
+            if (selectedTemplate == null) {
+                throw new RuntimeException("Il template selezionato non è valido: " + requestData.getTemplate());
+            }
         }
     }
 
@@ -58,6 +64,9 @@ public class MethodUtils {
         }
         if (!StringUtils.hasLength(requestData.getQrCodeColor())) {
             requestData.setQrCodeColor("#000000");
+        }
+        if (!StringUtils.hasLength(requestData.getTextColor())) {
+            requestData.setTextColor("#000000");
         }
     }
 
@@ -123,10 +132,19 @@ public class MethodUtils {
             return image;
         }
 
-        BufferedImage centerLogo = loadAndResizeLogo(requestData.getLogoCenterUrl(), whiteBoxSize, whiteBoxSize);  // Passa sia larghezza che altezza
+        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
 
-        return addLogoToCenter(image, centerLogo, requestData.getTopBorderSize(), requestData.getBottomBorderSize(),
-                requestData.getLeftBorderSize(), requestData.getRightBorderSize());
+        BufferedImage centerLogo = loadAndResizeLogo(requestData.getLogoCenterUrl(), whiteBoxSize, whiteBoxSize);
+
+        if (selectedTemplate == null) {
+            return addLogoToCenter(image, centerLogo, 0, 0, 0, 0); // Usa zero per i bordi
+        }
+
+        return addLogoToCenter(image, centerLogo,
+                selectedTemplate.getTopBorderSize(),
+                selectedTemplate.getBottomBorderSize(),
+                selectedTemplate.getLeftBorderSize(),
+                selectedTemplate.getRightBorderSize());
     }
 
     private static BufferedImage loadAndResizeLogo(String logoUrl, int width, int height) throws IOException {
@@ -136,55 +154,56 @@ public class MethodUtils {
     }
 
     public static BufferedImage addBordersIfProvided(RequestData requestData, BufferedImage image) {
-        boolean hasBorders = requestData.getTopBorderSize() != 0 || requestData.getBottomBorderSize() != 0 ||
-                requestData.getLeftBorderSize() != 0 || requestData.getRightBorderSize() != 0;
+        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
+        if (selectedTemplate == null) {
+            return image;
+        }
+
+        int topBorderSize = selectedTemplate.getTopBorderSize();
+        int bottomBorderSize = selectedTemplate.getBottomBorderSize();
+        int leftBorderSize = selectedTemplate.getLeftBorderSize();
+        int rightBorderSize = selectedTemplate.getRightBorderSize();
 
         boolean hasBorderColor = StringUtils.hasLength(requestData.getBorderColor());
-
         boolean hasTextBorder = StringUtils.hasLength(requestData.getTextBorder());
 
-        if (!hasBorders && (hasBorderColor || hasTextBorder)) {
+        if (topBorderSize == 0 && bottomBorderSize == 0 && leftBorderSize == 0 && rightBorderSize == 0 && (hasBorderColor || hasTextBorder)) {
             throw new RuntimeException("Inserire almeno un bordo per inserire il colore o il testo");
         }
 
-        if (hasBorders && !hasBorderColor) {
+        if ((topBorderSize > 0 || bottomBorderSize > 0 || leftBorderSize > 0 || rightBorderSize > 0) && !hasBorderColor) {
             throw new RuntimeException("Inserire un colore per i bordi");
         }
 
-        if (hasBorders) {
-            return addBorder(image,
-                    requestData.getTopBorderSize(),
-                    requestData.getBottomBorderSize(),
-                    requestData.getLeftBorderSize(),
-                    requestData.getRightBorderSize(),
-                    requestData.getBorderColorAsColor());
+        if (topBorderSize > 0 || bottomBorderSize > 0 || leftBorderSize > 0 || rightBorderSize > 0) {
+            return addBorder(image, topBorderSize, bottomBorderSize, leftBorderSize, rightBorderSize, requestData.getBorderColorAsColor());
         }
 
         return image;
     }
 
-    public static BufferedImage addLogoOrTextToBorderIfProvided(RequestData requestData, BufferedImage image, int whiteBoxSize) throws IOException {
-        if (requestData.getTopOrBottom() == null) {
-            throw new RuntimeException("Specificare il bordo sul quale inserire testo e logo");
+
+    public static void addLogoOrTextToBorderIfProvided(RequestData requestData, BufferedImage image, int whiteBoxSize) throws IOException {
+        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
+        if (selectedTemplate == null) {
+            return;
         }
 
-        String position = requestData.getTopOrBottom().toLowerCase();
-        int borderSize = "top".equals(position) ? requestData.getTopBorderSize() : requestData.getBottomBorderSize();
+        boolean hasTopBorder = selectedTemplate.getTopBorderSize() >= 60;
+        boolean hasBottomBorder = selectedTemplate.getBottomBorderSize() >= 60;
 
-        if (borderSize < 60) {
-            throw new RuntimeException("Il bordo su cui inserire il logo o il testo deve essere minimo 60");
+        if (!hasTopBorder && !hasBottomBorder) {
+            throw new RuntimeException("Il template deve avere un bordo superiore o inferiore di almeno 60.");
         }
 
-        if (StringUtils.hasLength(requestData.getLogoBorderUrl())) {
-            BufferedImage borderLogo = loadAndResizeLogo(requestData.getLogoBorderUrl(), whiteBoxSize, whiteBoxSize); // Usa il metodo esistente
-            image = addLogoToBorder(image, borderLogo, 20, 10, borderSize, requestData.getTopOrBottom());
+        if (hasTopBorder && StringUtils.hasLength(requestData.getTextBorder())) {
+            addTextToBorder(image, requestData.getTextBorder(), requestData, 20, selectedTemplate.getTopBorderSize(), "top");
         }
 
-        if (StringUtils.hasLength(requestData.getTextBorder())) {
-            addTextToBorder(image, requestData.getTextBorder(), Color.BLACK, 20, borderSize, requestData.getTopOrBottom());
+        if (hasBottomBorder && StringUtils.hasLength(requestData.getTextBorder())) {
+            addTextToBorder(image, requestData.getTextBorder(), requestData, 20, selectedTemplate.getBottomBorderSize(), "bottom");
         }
 
-        return image;
     }
 
     public static byte[] generateQrCodeBase(String text, RequestData requestData) throws WriterException, IOException {
@@ -233,7 +252,6 @@ public class MethodUtils {
             if (width < 200 || height < 200) {
                 throw new RuntimeException("Se vuoi personalizzare le dimensioni devono essere minimo 200");
             }
-            System.out.println("Condizione base con controllo");
             return generateQrCodeBase(requestData.getRequestUrl(), requestData);
         }
 
@@ -247,7 +265,7 @@ public class MethodUtils {
         Field[] fields = requestData.getClass().getDeclaredFields();
 
         for (Field field : fields) {
-            field.setAccessible(true); // Permette l'accesso a campi privati
+            field.setAccessible(true);
             String fieldName = field.getName();
 
             if (!fieldName.equals("requestUrl")) {
@@ -304,14 +322,9 @@ public class MethodUtils {
     }
 
     public static ResponseEntity<Object> handleRuntimeException(RuntimeException e) {
-        Map<Class<? extends RuntimeException>, HttpStatus> exceptionMap = new HashMap<>() {{
-            put(RuntimeException.class, HttpStatus.BAD_REQUEST);
-            put(RuntimeException.class, HttpStatus.BAD_REQUEST);
-            put(RuntimeException.class, HttpStatus.BAD_REQUEST);
-            put(RuntimeException.class, HttpStatus.BAD_REQUEST);
-            put(RuntimeException.class, HttpStatus.BAD_REQUEST);
-            put(ColorNotValidException.class, HttpStatus.BAD_REQUEST);
-        }};
+        Map<Class<? extends RuntimeException>, HttpStatus> exceptionMap = new HashMap<>();
+        exceptionMap.put(RuntimeException.class, HttpStatus.BAD_REQUEST);
+        exceptionMap.put(ColorNotValidException.class, HttpStatus.BAD_REQUEST);
 
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
         String errorMessage = "An unexpected error occurred";
@@ -428,7 +441,7 @@ public class MethodUtils {
         return imgWithBorder;
     }
 
-    public static BufferedImage addLogoToBorder(BufferedImage baseImage, BufferedImage logo, int fontSize, int logoMargin, int borderSize, String topOrBottom) {
+    /*public static BufferedImage addLogoToBorder(BufferedImage baseImage, BufferedImage logo, int fontSize, int logoMargin, int borderSize, String topOrBottom) {
         if (baseImage == null) {
             throw new IllegalArgumentException("L'immagine di base non può essere null.");
         }
@@ -450,15 +463,17 @@ public class MethodUtils {
         g2.dispose();
 
         return baseImage;
-    }
+    }*/
 
-    public static BufferedImage addTextToBorder(BufferedImage img, String text, Color textColor, int fontSize, int borderSize, String topOrBottom) {
+    public static void addTextToBorder(BufferedImage img, String text, RequestData requestData, int fontSize, int borderSize, String topOrBottom) {
         if (img == null) {
             throw new IllegalArgumentException("L'immagine non può essere null.");
         }
         if (text == null || text.isEmpty()) {
-            return img;
+            return;
         }
+
+        Color textColor = requestData.getTextColorAsColor();
 
         Graphics2D g = img.createGraphics();
         g.setColor(textColor);
@@ -467,15 +482,16 @@ public class MethodUtils {
 
         FontMetrics metrics = g.getFontMetrics();
         int textWidth = metrics.stringWidth(text);
-        int textHeight = metrics.getHeight();
+        int ascent = metrics.getAscent();
+        int descent = metrics.getDescent();
 
         int textX = (img.getWidth() - textWidth) / 2;
-        int textY;
 
+        int textY;
         if (topOrBottom.equalsIgnoreCase("top")) {
-            textY = borderSize / 2 + textHeight / 2;
+            textY = (borderSize + ascent - descent) / 2;
         } else if (topOrBottom.equalsIgnoreCase("bottom")) {
-            textY = img.getHeight() - borderSize / 2 + textHeight / 2;
+            textY = img.getHeight() - (borderSize / 2) + (ascent - descent) / 2;
         } else {
             throw new IllegalArgumentException("Specificare 'top' o 'bottom' per la posizione del testo.");
         }
@@ -483,7 +499,6 @@ public class MethodUtils {
         g.drawString(text, textX, textY);
         g.dispose();
 
-        return img;
     }
 
     public static Color convertHexToColor(String colorHex, String colorField) {
