@@ -21,6 +21,7 @@ public class TemplateConfig {
                 10,
                 10,
                 "Testo predefinito",
+                "top",
                 Color.BLACK,
                 Color.WHITE
         ));
@@ -34,6 +35,7 @@ public class TemplateConfig {
                 10,
                 10,
                 "Un altro testo predefinito",
+                "bottom",
                 Color.RED,
                 Color.WHITE
         ));

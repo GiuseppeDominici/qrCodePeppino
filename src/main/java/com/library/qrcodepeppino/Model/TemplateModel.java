@@ -21,6 +21,7 @@ public class TemplateModel {
     private int leftBorderSize;
     private int rightBorderSize;
     private String defaultText;
+    private String positionText;
     private Color borderColor;
     private Color textColor;
 

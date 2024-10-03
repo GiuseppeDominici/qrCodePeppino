@@ -1,5 +1,6 @@
 package com.library.qrcodepeppino.Utils;
 
+import com.library.qrcodepeppino.Exceptions.*;
 import com.library.qrcodepeppino.Model.RequestData;
 import com.library.qrcodepeppino.Model.ResponseImage;
 import com.library.qrcodepeppino.Model.SeparateFields;
@@ -10,8 +11,7 @@ import com.google.zxing.client.j2se.MatrixToImageConfig;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+
 import org.springframework.util.StringUtils;
 
 import javax.imageio.ImageIO;
@@ -30,6 +30,8 @@ import static com.library.qrcodepeppino.Utils.TemplateConfig.getTemplateByName;
 
 public class MethodUtils {
 
+    private static final String regex = "^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$";
+
     public static byte[] generateQrCodeImage(RequestData requestData) throws IOException, RuntimeException, WriterException {
         validateRequestData(requestData);
 
@@ -44,16 +46,12 @@ public class MethodUtils {
 
     private static void validateRequestData(RequestData requestData) {
         if (!StringUtils.hasLength(requestData.getRequestUrl())) {
-            throw new RuntimeException("Specificare un URL");
+            throw new UrlNotValidException(requestData.getRequestUrl());
         }
 
-        if (requestData.getTemplate() == null || requestData.getTemplate().isEmpty()) {
-            requestData.setQrWidth(200);
-            requestData.setQrHeight(200);
-        } else {
-            TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
-            if (selectedTemplate == null) {
-                throw new RuntimeException("Il template selezionato non è valido: " + requestData.getTemplate());
+        if (requestData.hasTemplate()) {
+            if (getTemplateByName(requestData.getTemplate()) == null) {
+                throw new TemplateNotFoundException(requestData.getTemplate());
             }
         }
     }
@@ -65,18 +63,22 @@ public class MethodUtils {
         if (!StringUtils.hasLength(requestData.getQrCodeColor())) {
             requestData.setQrCodeColor("#000000");
         }
-        if (!StringUtils.hasLength(requestData.getTextColor())) {
-            requestData.setTextColor("#000000");
+        if (!StringUtils.hasLength(requestData.getColorText())) {
+            requestData.setColorText("#000000");
         }
     }
 
     private static BufferedImage createQrCodeImage(RequestData requestData) throws WriterException {
         QRCodeWriter qrCodeWriter = new QRCodeWriter();
+
+        final int fixedQrWidth = 200;
+        final int fixedQrHeight = 200;
+
         BitMatrix bitMatrix = qrCodeWriter.encode(
                 requestData.getRequestUrl(),
                 BarcodeFormat.QR_CODE,
-                requestData.getQrWidth(),
-                requestData.getQrHeight()
+                fixedQrWidth,
+                fixedQrHeight
         );
 
         MatrixToImageConfig config = new MatrixToImageConfig(
@@ -87,11 +89,82 @@ public class MethodUtils {
         return MatrixToImageWriter.toBufferedImage(bitMatrix, config);
     }
 
+    public static byte[] generateQrCodeBase(String text, RequestData requestData) throws WriterException, IOException {
+        final int fixedQrWidth = 200;
+        final int fixedQrHeight = 200;
+
+        QRCodeWriter qrCodeWriter = new QRCodeWriter();
+
+        if (!StringUtils.hasLength(requestData.getRequestUrl())) {
+            throw new UrlNotValidException(requestData.getRequestUrl());
+        }
+
+        BitMatrix bitMatrix = qrCodeWriter.encode(text, BarcodeFormat.QR_CODE, fixedQrWidth, fixedQrHeight);
+
+        try (ByteArrayOutputStream pngOutputStream = new ByteArrayOutputStream()) {
+            MatrixToImageConfig config = new MatrixToImageConfig(
+                    requestData.getQrCodeColorAsColor().getRGB(),
+                    requestData.getBackgroundColorAsColor().getRGB()
+            );
+
+            MatrixToImageWriter.writeToStream(bitMatrix, "PNG", pngOutputStream, config);
+
+            return pngOutputStream.toByteArray();
+        }
+    }
+
+
+    public static byte[] qrCodeResult(RequestData requestData) throws WriterException, IOException {
+        boolean areZero = areAllZero(separateFields(requestData).getIntFields());
+        boolean emptyString = containsOnlyEmptyStrings(separateFields(requestData).getStringFields());
+
+        if (areZero && emptyString) {
+            return generateQrCodeBase(requestData.getRequestUrl(), requestData);
+        }
+
+        if (emptyString) {
+            return generateQrCodeBase(requestData.getRequestUrl(), requestData);
+        }
+
+        return generateQrCodeImage(requestData);
+    }
+
+
+    public static SeparateFields separateFields(RequestData requestData) {
+        List<String> stringFields = new ArrayList<>();
+        List<Integer> intFields = new ArrayList<>();
+
+        Field[] fields = requestData.getClass().getDeclaredFields();
+
+        for (Field field : fields) {
+            field.setAccessible(true);
+            String fieldName = field.getName();
+
+            if (!fieldName.equals("requestUrl")) {
+                try {
+                    Object value = field.get(requestData);
+                    if (value instanceof String) {
+                        stringFields.add((String) value);
+                    } else if (value instanceof Integer) {
+                        intFields.add((Integer) value);
+                    }
+                } catch (IllegalAccessException e) {
+                    throw new RuntimeException("Accesso al campo fallito: " + fieldName, e);
+                }
+            }
+        }
+
+        return new SeparateFields(new ArrayList<>(stringFields), new ArrayList<>(intFields));
+    }
+
+
     private static BufferedImage applyCustomizations(RequestData requestData, BufferedImage image) throws IOException {
         int whiteBoxSize = 0;
+        final int fixedQrWidth = 200;
+        final int fixedQrHeight = 200;
 
         if (StringUtils.hasLength(requestData.getLogoCenterUrl())) {
-            whiteBoxSize = (int) (Math.min(requestData.getQrWidth(), requestData.getQrHeight()) * 0.135);
+            whiteBoxSize = (int) (Math.min(fixedQrWidth, fixedQrHeight * 0.135));
             image = addWhiteBox(requestData, image, whiteBoxSize);
         }
 
@@ -111,13 +184,15 @@ public class MethodUtils {
     }
 
     public static BufferedImage addWhiteBox(RequestData requestData, BufferedImage image, int whiteBoxSize) {
+        final int fixedQrWidth = 200;
+        final int fixedQrHeight = 200;
         BufferedImage modifiedImage = new BufferedImage(image.getWidth(), image.getHeight(), BufferedImage.TYPE_INT_ARGB);
 
         Graphics2D qrGraphics = modifiedImage.createGraphics();
         qrGraphics.drawImage(image, 0, 0, null);
 
-        int whiteBoxX = (requestData.getQrWidth() - whiteBoxSize) / 2;
-        int whiteBoxY = (requestData.getQrHeight() - whiteBoxSize) / 2;
+        int whiteBoxX = (fixedQrWidth - whiteBoxSize) / 2;
+        int whiteBoxY = (fixedQrHeight - whiteBoxSize) / 2;
 
         qrGraphics.setColor(Color.WHITE);
         qrGraphics.fillRect(whiteBoxX, whiteBoxY, whiteBoxSize, whiteBoxSize);
@@ -125,166 +200,6 @@ public class MethodUtils {
         qrGraphics.dispose();
 
         return modifiedImage;
-    }
-
-    public static BufferedImage addCenterLogoIfProvided(RequestData requestData, BufferedImage image, int whiteBoxSize) throws IOException {
-        if (!StringUtils.hasLength(requestData.getLogoCenterUrl())) {
-            return image;
-        }
-
-        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
-
-        BufferedImage centerLogo = loadAndResizeLogo(requestData.getLogoCenterUrl(), whiteBoxSize, whiteBoxSize);
-
-        if (selectedTemplate == null) {
-            return addLogoToCenter(image, centerLogo, 0, 0, 0, 0); // Usa zero per i bordi
-        }
-
-        return addLogoToCenter(image, centerLogo,
-                selectedTemplate.getTopBorderSize(),
-                selectedTemplate.getBottomBorderSize(),
-                selectedTemplate.getLeftBorderSize(),
-                selectedTemplate.getRightBorderSize());
-    }
-
-    private static BufferedImage loadAndResizeLogo(String logoUrl, int width, int height) throws IOException {
-        BufferedImage logoImage = loadImageFromUrl(logoUrl);
-
-        return resizeImage(logoImage, width, height);
-    }
-
-    public static BufferedImage addBordersIfProvided(RequestData requestData, BufferedImage image) {
-        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
-        if (selectedTemplate == null) {
-            return image;
-        }
-
-        int topBorderSize = selectedTemplate.getTopBorderSize();
-        int bottomBorderSize = selectedTemplate.getBottomBorderSize();
-        int leftBorderSize = selectedTemplate.getLeftBorderSize();
-        int rightBorderSize = selectedTemplate.getRightBorderSize();
-
-        boolean hasBorderColor = StringUtils.hasLength(requestData.getBorderColor());
-        boolean hasTextBorder = StringUtils.hasLength(requestData.getTextBorder());
-
-        if (topBorderSize == 0 && bottomBorderSize == 0 && leftBorderSize == 0 && rightBorderSize == 0 && (hasBorderColor || hasTextBorder)) {
-            throw new RuntimeException("Inserire almeno un bordo per inserire il colore o il testo");
-        }
-
-        if ((topBorderSize > 0 || bottomBorderSize > 0 || leftBorderSize > 0 || rightBorderSize > 0) && !hasBorderColor) {
-            throw new RuntimeException("Inserire un colore per i bordi");
-        }
-
-        if (topBorderSize > 0 || bottomBorderSize > 0 || leftBorderSize > 0 || rightBorderSize > 0) {
-            return addBorder(image, topBorderSize, bottomBorderSize, leftBorderSize, rightBorderSize, requestData.getBorderColorAsColor());
-        }
-
-        return image;
-    }
-
-
-    public static void addLogoOrTextToBorderIfProvided(RequestData requestData, BufferedImage image, int whiteBoxSize) throws IOException {
-        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
-        if (selectedTemplate == null) {
-            return;
-        }
-
-        boolean hasTopBorder = selectedTemplate.getTopBorderSize() >= 60;
-        boolean hasBottomBorder = selectedTemplate.getBottomBorderSize() >= 60;
-
-        if (!hasTopBorder && !hasBottomBorder) {
-            throw new RuntimeException("Il template deve avere un bordo superiore o inferiore di almeno 60.");
-        }
-
-        if (hasTopBorder && StringUtils.hasLength(requestData.getTextBorder())) {
-            addTextToBorder(image, requestData.getTextBorder(), requestData, 20, selectedTemplate.getTopBorderSize(), "top");
-        }
-
-        if (hasBottomBorder && StringUtils.hasLength(requestData.getTextBorder())) {
-            addTextToBorder(image, requestData.getTextBorder(), requestData, 20, selectedTemplate.getBottomBorderSize(), "bottom");
-        }
-
-    }
-
-    public static byte[] generateQrCodeBase(String text, RequestData requestData) throws WriterException, IOException {
-        QRCodeWriter qrCodeWriter = new QRCodeWriter();
-
-        if (!StringUtils.hasLength(requestData.getRequestUrl())) {
-            throw new RuntimeException("Specificare un URL");
-        }
-
-        int width = requestData.getQrWidth() > 0 ? requestData.getQrWidth() : 200;
-        int height = requestData.getQrHeight() > 0 ? requestData.getQrHeight() : 200;
-
-        if (width < 200 || height < 200) {
-            throw new RuntimeException("Le dimensioni devono essere almeno 200x200");
-        }
-
-        BitMatrix bitMatrix = qrCodeWriter.encode(text, BarcodeFormat.QR_CODE, width, height);
-
-        try (ByteArrayOutputStream pngOutputStream = new ByteArrayOutputStream()) {
-            MatrixToImageConfig config = new MatrixToImageConfig(
-                    requestData.getQrCodeColorAsColor().getRGB(),
-                    requestData.getBackgroundColorAsColor().getRGB()
-            );
-
-            MatrixToImageWriter.writeToStream(bitMatrix, "PNG", pngOutputStream, config);
-
-            return pngOutputStream.toByteArray();
-        }
-    }
-
-    public static byte[] qrCodeResult(RequestData requestData) throws WriterException, IOException {
-        boolean areZero = areAllZero(separateFields(requestData).getIntFields());
-        boolean emptyString = containsOnlyEmptyStrings(separateFields(requestData).getStringFields());
-
-        int width = requestData.getQrWidth();
-        int height = requestData.getQrHeight();
-
-        if (areZero && emptyString) {
-            width = 350;
-            height = 350;
-            System.out.println("Condizione base");
-            return generateQrCodeBase(requestData.getRequestUrl(), requestData);
-        }
-
-        if (emptyString && (width != 0 || height != 0)) {
-            if (width < 200 || height < 200) {
-                throw new RuntimeException("Se vuoi personalizzare le dimensioni devono essere minimo 200");
-            }
-            return generateQrCodeBase(requestData.getRequestUrl(), requestData);
-        }
-
-        return generateQrCodeImage(requestData);
-    }
-
-    public static SeparateFields separateFields(RequestData requestData) {
-        List<String> stringFields = new ArrayList<>();
-        List<Integer> intFields = new ArrayList<>();
-
-        Field[] fields = requestData.getClass().getDeclaredFields();
-
-        for (Field field : fields) {
-            field.setAccessible(true);
-            String fieldName = field.getName();
-
-            if (!fieldName.equals("requestUrl")) {
-                try {
-                    Object value = field.get(requestData);
-                    if (value instanceof String) {
-                        stringFields.add((String) value);
-                    } else if (value instanceof Integer) {
-                        intFields.add((Integer) value);
-                    } else {
-                        System.out.println("Campo ignorato: " + fieldName + " (tipo: " + value.getClass().getSimpleName() + ")");
-                    }
-                } catch (IllegalAccessException e) {
-                    throw new RuntimeException("Accesso al campo fallito: " + fieldName, e);
-                }
-            }
-        }
-
-        return new SeparateFields(new ArrayList<>(stringFields), new ArrayList<>(intFields));
     }
 
     public static boolean areAllZero(List<Integer> l) {
@@ -321,28 +236,35 @@ public class MethodUtils {
         return response;
     }
 
-    public static ResponseEntity<Object> handleRuntimeException(RuntimeException e) {
-        Map<Class<? extends RuntimeException>, HttpStatus> exceptionMap = new HashMap<>();
-        exceptionMap.put(RuntimeException.class, HttpStatus.BAD_REQUEST);
-        exceptionMap.put(ColorNotValidException.class, HttpStatus.BAD_REQUEST);
-
-        HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
-        String errorMessage = "An unexpected error occurred";
-
-        if (exceptionMap.containsKey(e.getClass())) {
-            status = exceptionMap.get(e.getClass());
-            errorMessage = e.getClass().getSimpleName() + ": " + e.getMessage();
+    public static BufferedImage addCenterLogoIfProvided(RequestData requestData, BufferedImage image, int whiteBoxSize) throws IOException {
+        if (!StringUtils.hasLength(requestData.getLogoCenterUrl())) {
+            return image;
         }
 
-        Map<String, String> errorResponse = new HashMap<>();
-        errorResponse.put("error", errorMessage);
+        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
 
-        return ResponseEntity.status(status).body(errorResponse);
+        BufferedImage centerLogo = loadAndResizeLogo(requestData.getLogoCenterUrl(), whiteBoxSize, whiteBoxSize);
+
+        if (selectedTemplate == null) {
+            return addLogoToCenter(image, centerLogo, 0, 0, 0, 0); // Usa zero per i bordi
+        }
+
+        return addLogoToCenter(image, centerLogo,
+                selectedTemplate.getTopBorderSize(),
+                selectedTemplate.getBottomBorderSize(),
+                selectedTemplate.getLeftBorderSize(),
+                selectedTemplate.getRightBorderSize());
+    }
+
+    private static BufferedImage loadAndResizeLogo(String logoUrl, int width, int height) throws IOException {
+        BufferedImage logoImage = loadImageFromUrl(logoUrl);
+
+        return resizeImage(logoImage, width, height);
     }
 
     private static BufferedImage loadImageFromUrl(String imageUrl) throws IOException {
         if (imageUrl == null || imageUrl.trim().isEmpty()) {
-            throw new IllegalArgumentException("L'URL dell'immagine non può essere nullo o vuoto.");
+            throw new ImageNullException();
         }
 
         try {
@@ -350,12 +272,12 @@ public class MethodUtils {
             BufferedImage image = ImageIO.read(url);
 
             if (image == null) {
-                throw new IOException("Impossibile caricare l'immagine dall'URL: " + imageUrl);
+                throw new ImageUrlNotFoundException(imageUrl);
             }
 
             return image;
         } catch (MalformedURLException e) {
-            throw new IllegalArgumentException("L'URL fornito non è valido: " + imageUrl, e);
+            throw new ImageUrlNotValidException(imageUrl);
         } catch (IOException e) {
             throw new IOException("Errore nel caricamento dell'immagine dall'URL: " + imageUrl, e);
         }
@@ -363,7 +285,7 @@ public class MethodUtils {
 
     public static BufferedImage resizeImage(BufferedImage originalImage, int targetWidth, int targetHeight) {
         if (originalImage == null) {
-            throw new IllegalArgumentException("L'immagine originale non può essere null.");
+            throw new ImageNullException();
         }
 
         if (targetWidth <= 0 || targetHeight <= 0) {
@@ -384,19 +306,63 @@ public class MethodUtils {
         return outputImage;
     }
 
+    public static BufferedImage addBordersIfProvided(RequestData requestData, BufferedImage image) {
+        if (!requestData.isHasTemplate()) {
+            return image;
+        }
+
+        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
+        if (selectedTemplate == null) {
+            throw new TemplateNotFoundException(requestData.getTemplate());
+        }
+
+        int topBorderSize = selectedTemplate.getTopBorderSize();
+        int bottomBorderSize = selectedTemplate.getBottomBorderSize();
+        int leftBorderSize = selectedTemplate.getLeftBorderSize();
+        int rightBorderSize = selectedTemplate.getRightBorderSize();
+
+        if (topBorderSize > 0 || bottomBorderSize > 0 || leftBorderSize > 0 || rightBorderSize > 0) {
+            if (!StringUtils.hasLength(requestData.getBorderColor())) {
+                throw new BorderColorNotValidException(requestData.getBorderColor());
+            }
+            return addBorder(image, topBorderSize, bottomBorderSize, leftBorderSize, rightBorderSize, requestData.getBorderColorAsColor());
+        }
+
+        return image;
+    }
+
+    public static void addLogoOrTextToBorderIfProvided(RequestData requestData, BufferedImage image, int whiteBoxSize) {
+        if (!requestData.isHasTemplate()) {
+            return;
+        }
+
+        TemplateModel selectedTemplate = getTemplateByName(requestData.getTemplate());
+        if (selectedTemplate == null) {
+            throw new TemplateNotFoundException(requestData.getTemplate());
+        }
+
+        if (StringUtils.hasLength(requestData.getBorderText())) {
+            addTextToBorder(image, requestData.getBorderText(), selectedTemplate, 20);
+
+            if ("bottom".equalsIgnoreCase(selectedTemplate.getPositionText())) {
+                addTextToBorder(image, requestData.getBorderText(), selectedTemplate, 20);
+            }
+        }
+    }
+
     public static BufferedImage addLogoToCenter(BufferedImage baseImage, BufferedImage logo, int topBorderSize, int bottomBorderSize, int leftBorderSize, int rightBorderSize) {
         if (baseImage == null) {
-            throw new IllegalArgumentException("L'immagine di base non può essere null.");
+            throw new ImageNullException();
         }
         if (logo == null) {
-            throw new IllegalArgumentException("Il logo non può essere null.");
+            throw new LogoNotFoundException();
         }
 
         int effectiveWidth = baseImage.getWidth() - leftBorderSize - rightBorderSize;
         int effectiveHeight = baseImage.getHeight() - topBorderSize - bottomBorderSize;
 
         if (logo.getWidth() > effectiveWidth || logo.getHeight() > effectiveHeight) {
-            throw new IllegalArgumentException("Il logo è troppo grande per essere centrato nell'area disponibile.");
+            throw new InvalidDimensionLogoException();
         }
 
         int logoX = (effectiveWidth - logo.getWidth()) / 2 + leftBorderSize;
@@ -418,11 +384,7 @@ public class MethodUtils {
 
     public static BufferedImage addBorder(BufferedImage img, int topBorderSize, int bottomBorderSize, int leftBorderSize, int rightBorderSize, Color borderColor) {
         if (img == null) {
-            throw new IllegalArgumentException("L'immagine non può essere null.");
-        }
-
-        if (topBorderSize < 0 || bottomBorderSize < 0 || leftBorderSize < 0 || rightBorderSize < 0) {
-            throw new IllegalArgumentException("Le dimensioni del bordo non possono essere negative.");
+            throw new ImageNullException();
         }
 
         int newWidth = img.getWidth() + leftBorderSize + rightBorderSize;
@@ -440,6 +402,7 @@ public class MethodUtils {
 
         return imgWithBorder;
     }
+
 
     /*public static BufferedImage addLogoToBorder(BufferedImage baseImage, BufferedImage logo, int fontSize, int logoMargin, int borderSize, String topOrBottom) {
         if (baseImage == null) {
@@ -465,15 +428,15 @@ public class MethodUtils {
         return baseImage;
     }*/
 
-    public static void addTextToBorder(BufferedImage img, String text, RequestData requestData, int fontSize, int borderSize, String topOrBottom) {
+    public static void addTextToBorder(BufferedImage img, String text, TemplateModel template, int fontSize) {
         if (img == null) {
-            throw new IllegalArgumentException("L'immagine non può essere null.");
+            throw new ImageNullException();
         }
         if (text == null || text.isEmpty()) {
             return;
         }
 
-        Color textColor = requestData.getTextColorAsColor();
+        Color textColor = template.getTextColor();
 
         Graphics2D g = img.createGraphics();
         g.setColor(textColor);
@@ -483,35 +446,27 @@ public class MethodUtils {
         FontMetrics metrics = g.getFontMetrics();
         int textWidth = metrics.stringWidth(text);
         int ascent = metrics.getAscent();
-        int descent = metrics.getDescent();
 
         int textX = (img.getWidth() - textWidth) / 2;
 
         int textY;
-        if (topOrBottom.equalsIgnoreCase("top")) {
-            textY = (borderSize + ascent - descent) / 2;
-        } else if (topOrBottom.equalsIgnoreCase("bottom")) {
-            textY = img.getHeight() - (borderSize / 2) + (ascent - descent) / 2;
+        if (template.getPositionText().equalsIgnoreCase("top")) {
+            textY = (template.getTopBorderSize() / 2) + (ascent / 2);
+        } else if (template.getPositionText().equalsIgnoreCase("bottom")) {
+            textY = img.getHeight() - (template.getBottomBorderSize() / 2) + (ascent / 2);
         } else {
-            throw new IllegalArgumentException("Specificare 'top' o 'bottom' per la posizione del testo.");
+            return;
         }
 
         g.drawString(text, textX, textY);
         g.dispose();
-
     }
 
     public static Color convertHexToColor(String colorHex, String colorField) {
-        if (colorHex == null || !colorHex.matches("^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$")) {
-            throw new ColorNotValidException("Il codice del colore per " + colorField + " non è valido: " + colorHex);
+        if (colorHex == null || !colorHex.matches(regex)) {
+            throw new ColorNotValidException(colorField, colorHex);
         }
         return Color.decode(colorHex);
-    }
-
-    public static class ColorNotValidException extends RuntimeException {
-        public ColorNotValidException(String message) {
-            super(message);
-        }
     }
 
 }
